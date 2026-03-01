@@ -25,6 +25,254 @@ scan_lock = threading.Lock()
 
 SKIP_DIRS = {"$RECYCLE.BIN", "System Volume Information", ".claude"}
 
+# WARNING: Risk levels are ESTIMATES only. The user is solely responsible for
+# verifying that any file is safe to delete before removing it. This tool
+# provides guidance but CANNOT guarantee that deletion will not cause problems.
+#
+# (description, base_risk)
+# Risk levels:
+#   0 = Disposable : Auto-generated, can be regenerated without user action
+#                    (cache, bytecode, temp files, crash dumps)
+#   1 = Low        : Replaceable with some effort - re-download or re-create
+#                    (AI models, media, documents, packages, archives)
+#   2 = Medium     : May affect app behavior - config, database, fonts, VM disks
+#   3 = High       : System-critical or security-sensitive - may break OS or apps
+#                    (DLLs, drivers, executables, certificates, registry)
+#
+# Path-based adjustment: files in Windows/System32 dirs -> max(risk, 3),
+#                        files in Program Files dirs -> max(risk, 2)
+EXT_INFO = {
+    # === System / Executable ===
+    ".dll":  ("Dynamic Library", 3),
+    ".sys":  ("System Driver", 3),
+    ".drv":  ("Device Driver", 3),
+    ".exe":  ("Executable", 3),
+    ".msi":  ("Installer Package", 2),
+    ".msix": ("App Package", 2),
+    ".ocx":  ("ActiveX Control", 3),
+    ".cpl":  ("Control Panel Item", 3),
+    ".scr":  ("Screen Saver", 2),
+    ".com":  ("DOS Executable", 3),
+    ".bat":  ("Batch Script", 2),
+    ".cmd":  ("Command Script", 2),
+    ".ps1":  ("PowerShell Script", 2),
+    ".vbs":  ("VBScript", 2),
+    ".wsf":  ("Windows Script", 2),
+    ".inf":  ("Setup Information", 3),
+    ".cat":  ("Security Catalog", 3),
+    ".mui":  ("UI Resource (MUI)", 3),
+    ".etl":  ("Event Trace Log", 0),
+    ".evtx": ("Event Log", 0),
+    ".efi":  ("EFI Boot File", 3),
+    # === AI / ML Models ===
+    ".safetensors": ("AI Model (SafeTensors)", 1),
+    ".ckpt":  ("AI Checkpoint", 1),
+    ".pt":    ("PyTorch Model", 1),
+    ".pth":   ("PyTorch Weights", 1),
+    ".onnx":  ("ONNX Model", 1),
+    ".gguf":  ("GGUF Model (LLM)", 1),
+    ".ggml":  ("GGML Model (LLM)", 1),
+    ".bin":   ("Binary Data", 1),
+    ".h5":    ("HDF5 Data", 1),
+    ".hdf5":  ("HDF5 Data", 1),
+    ".pkl":   ("Python Pickle", 1),
+    ".npy":   ("NumPy Array", 1),
+    ".npz":   ("NumPy Archive", 1),
+    # === Video ===
+    ".mp4":  ("Video (MP4)", 1),
+    ".avi":  ("Video (AVI)", 1),
+    ".mkv":  ("Video (MKV)", 1),
+    ".mov":  ("Video (MOV)", 1),
+    ".wmv":  ("Video (WMV)", 1),
+    ".flv":  ("Video (FLV)", 1),
+    ".webm": ("Video (WebM)", 1),
+    ".m4v":  ("Video (M4V)", 1),
+    ".mpg":  ("Video (MPEG)", 1),
+    ".mpeg": ("Video (MPEG)", 1),
+    ".ts":   ("Video (TS)", 1),
+    ".vob":  ("DVD Video", 1),
+    ".3gp":  ("Video (3GP)", 1),
+    # === Audio ===
+    ".mp3":  ("Audio (MP3)", 1),
+    ".wav":  ("Audio (WAV)", 1),
+    ".flac": ("Audio (FLAC)", 1),
+    ".aac":  ("Audio (AAC)", 1),
+    ".ogg":  ("Audio (OGG)", 1),
+    ".wma":  ("Audio (WMA)", 1),
+    ".m4a":  ("Audio (M4A)", 1),
+    ".opus": ("Audio (Opus)", 1),
+    ".aiff": ("Audio (AIFF)", 1),
+    ".mid":  ("MIDI Audio", 1),
+    ".midi": ("MIDI Audio", 1),
+    # === Image ===
+    ".jpg":  ("Image (JPEG)", 1),
+    ".jpeg": ("Image (JPEG)", 1),
+    ".png":  ("Image (PNG)", 1),
+    ".bmp":  ("Image (BMP)", 1),
+    ".gif":  ("Image (GIF)", 1),
+    ".tiff": ("Image (TIFF)", 1),
+    ".tif":  ("Image (TIFF)", 1),
+    ".webp": ("Image (WebP)", 1),
+    ".svg":  ("Vector Image (SVG)", 1),
+    ".ico":  ("Icon File", 1),
+    ".raw":  ("RAW Photo", 1),
+    ".cr2":  ("Canon RAW", 1),
+    ".nef":  ("Nikon RAW", 1),
+    ".arw":  ("Sony RAW", 1),
+    ".dng":  ("Digital Negative", 1),
+    ".heic": ("Image (HEIC)", 1),
+    ".heif": ("Image (HEIF)", 1),
+    # === Design / 3D ===
+    ".psd":  ("Photoshop File", 1),
+    ".ai":   ("Illustrator File", 1),
+    ".indd": ("InDesign File", 1),
+    ".xcf":  ("GIMP File", 1),
+    ".blend":("Blender File", 1),
+    ".fbx":  ("3D Model (FBX)", 1),
+    ".obj":  ("3D Model (OBJ)", 1),
+    ".stl":  ("3D Model (STL)", 1),
+    ".glb":  ("3D Model (GLB)", 1),
+    ".gltf": ("3D Model (glTF)", 1),
+    ".uasset":("Unreal Asset", 1),
+    # === Document ===
+    ".pdf":  ("PDF Document", 1),
+    ".doc":  ("Word Document", 1),
+    ".docx": ("Word Document", 1),
+    ".xls":  ("Excel Spreadsheet", 1),
+    ".xlsx": ("Excel Spreadsheet", 1),
+    ".ppt":  ("PowerPoint", 1),
+    ".pptx": ("PowerPoint", 1),
+    ".hwp":  ("HWP Document", 1),
+    ".hwpx": ("HWPX Document", 1),
+    ".odt":  ("OpenDoc Text", 1),
+    ".ods":  ("OpenDoc Sheet", 1),
+    ".odp":  ("OpenDoc Present", 1),
+    ".txt":  ("Text File", 1),
+    ".csv":  ("CSV Data", 1),
+    ".rtf":  ("Rich Text", 1),
+    ".md":   ("Markdown", 1),
+    ".epub": ("eBook (EPUB)", 1),
+    # === Archive ===
+    ".zip":  ("ZIP Archive", 1),
+    ".7z":   ("7-Zip Archive", 1),
+    ".rar":  ("RAR Archive", 1),
+    ".tar":  ("TAR Archive", 1),
+    ".gz":   ("GZip Archive", 1),
+    ".bz2":  ("BZip2 Archive", 1),
+    ".xz":   ("XZ Archive", 1),
+    ".zst":  ("Zstandard Archive", 1),
+    ".cab":  ("Cabinet Archive", 1),
+    ".lz":   ("LZ Archive", 1),
+    ".lzma": ("LZMA Archive", 1),
+    # === Disk / VM ===
+    ".iso":  ("Disk Image (ISO)", 1),
+    ".img":  ("Disk Image", 1),
+    ".vhd":  ("Virtual Hard Disk", 2),
+    ".vhdx": ("Virtual Hard Disk", 2),
+    ".vmdk": ("VMware Disk", 2),
+    ".qcow2":("QEMU Disk Image", 2),
+    ".vdi":  ("VirtualBox Disk", 2),
+    ".wim":  ("Windows Image", 2),
+    ".esd":  ("Windows ESD Image", 2),
+    # === Database ===
+    ".db":     ("Database File", 2),
+    ".sqlite": ("SQLite Database", 2),
+    ".sqlite3":("SQLite Database", 2),
+    ".mdf":    ("SQL Server DB", 3),
+    ".ldf":    ("SQL Server Log", 2),
+    ".accdb":  ("Access Database", 2),
+    ".mdb":    ("Access Database", 2),
+    # === Config / Registry ===
+    ".reg":  ("Registry File", 3),
+    ".ini":  ("Config (INI)", 2),
+    ".cfg":  ("Config File", 2),
+    ".conf": ("Config File", 2),
+    ".xml":  ("XML Data", 1),
+    ".json": ("JSON Data", 1),
+    ".yaml": ("YAML Config", 1),
+    ".yml":  ("YAML Config", 1),
+    ".toml": ("TOML Config", 1),
+    ".env":  ("Environment Config", 2),
+    # === Development ===
+    ".jar":  ("Java Archive", 1),
+    ".war":  ("Java Web Archive", 1),
+    ".class":("Java Bytecode", 0),
+    ".pyc":  ("Python Bytecode", 0),
+    ".pyo":  ("Python Optimized", 0),
+    ".o":    ("Object File", 0),
+    ".obj":  ("Object File", 1),
+    ".lib":  ("Static Library", 2),
+    ".a":    ("Static Library", 2),
+    ".so":   ("Shared Library", 2),
+    ".dylib":("macOS Library", 2),
+    ".whl":  ("Python Wheel", 1),
+    ".egg":  ("Python Egg", 1),
+    ".gem":  ("Ruby Gem", 1),
+    ".deb":  ("Debian Package", 1),
+    ".rpm":  ("RPM Package", 1),
+    ".apk":  ("Android Package", 1),
+    ".ipa":  ("iOS App Package", 1),
+    ".node": ("Node.js Addon", 1),
+    ".wasm": ("WebAssembly", 1),
+    # === Cache / Temp (auto-regenerated) ===
+    ".tmp":   ("Temp File", 0),
+    ".temp":  ("Temp File", 0),
+    ".cache": ("Cache File", 0),
+    ".log":   ("Log File", 0),
+    ".bak":   ("Backup File", 1),
+    ".old":   ("Old Backup", 0),
+    ".dmp":   ("Crash Dump", 0),
+    ".swp":   ("Swap File (Vim)", 0),
+    ".swo":   ("Swap File (Vim)", 0),
+    # === Font ===
+    ".ttf":   ("TrueType Font", 2),
+    ".otf":   ("OpenType Font", 2),
+    ".woff":  ("Web Font", 1),
+    ".woff2": ("Web Font 2", 1),
+    ".fon":   ("Bitmap Font", 2),
+    # === Certificate / Key ===
+    ".pem":  ("PEM Certificate", 3),
+    ".key":  ("Private Key", 3),
+    ".crt":  ("Certificate", 3),
+    ".cer":  ("Certificate", 3),
+    ".pfx":  ("PKCS#12 Cert", 3),
+    ".p12":  ("PKCS#12 Cert", 3),
+    ".p7b":  ("PKCS#7 Cert", 3),
+    # === Misc ===
+    ".dat":  ("Data File", 2),
+    ".pak":  ("Package Data", 2),
+    ".res":  ("Resource File", 2),
+    ".rc":   ("Resource Script", 1),
+    ".manifest": ("App Manifest", 2),
+    ".lnk":  ("Shortcut", 0),
+    ".url":  ("URL Shortcut", 0),
+    ".torrent": ("Torrent File", 0),
+}
+
+SYSTEM_PATH_KEYWORDS = [
+    "\\windows\\", "\\system32\\", "\\syswow64\\",
+    "\\winsxs\\", "\\driverstore\\",
+]
+PROGRAM_PATH_KEYWORDS = [
+    "\\program files\\", "\\program files (x86)\\",
+]
+
+
+def get_file_info(ext, path):
+    """Return (description, risk) for a file based on extension and path."""
+    desc, risk = EXT_INFO.get(ext, ("Unknown", 1))
+    path_lower = path.lower()
+    for kw in SYSTEM_PATH_KEYWORDS:
+        if kw in path_lower:
+            risk = max(risk, 3)
+            break
+    else:
+        for kw in PROGRAM_PATH_KEYWORDS:
+            if kw in path_lower:
+                risk = max(risk, 2)
+                break
+    return desc, risk
+
 
 def human_size(nbytes):
     for unit in ("B", "KB", "MB", "GB", "TB"):
@@ -62,6 +310,8 @@ def scan_directory(root):
                         elif entry.is_file(follow_symlinks=False):
                             stat = entry.stat()
                             if stat.st_size >= MIN_SIZE_BYTES:
+                                ext = os.path.splitext(entry.name)[1].lower()
+                                desc, risk = get_file_info(ext, entry.path)
                                 files.append({
                                     "path": entry.path,
                                     "name": entry.name,
@@ -72,7 +322,9 @@ def scan_directory(root):
                                     "atime_s": datetime.fromtimestamp(stat.st_atime).strftime("%Y-%m-%d %H:%M"),
                                     "mtime": stat.st_mtime,
                                     "mtime_s": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M"),
-                                    "ext": os.path.splitext(entry.name)[1].lower(),
+                                    "ext": ext,
+                                    "desc": desc,
+                                    "risk": risk,
                                 })
                                 found += 1
                             scanned += 1
@@ -161,6 +413,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
   button.clear-sort { background:#333; font-size:11px; padding:4px 10px; }
   button.clear-sort:hover { background:#555; }
   th .sort-info { white-space:nowrap; }
+  .risk-badge { display:inline-block; padding:1px 8px; border-radius:3px; font-size:11px; font-weight:bold; text-align:center; min-width:44px; }
+  .risk-0 { background:#16412a; color:#22c55e; }
+  .risk-1 { background:#1e2d4a; color:#3b82f6; }
+  .risk-2 { background:#3d2e0a; color:#f59e0b; }
+  .risk-3 { background:#3b1111; color:#ef4444; }
+  .desc-col { color:#aaa; font-size:12px; max-width:180px; overflow:hidden; text-overflow:ellipsis; }
+  .info-btn { background:none; border:1px solid #444; color:#8ab4f8; padding:1px 6px; border-radius:3px; cursor:pointer; font-size:11px; min-width:20px; }
+  .info-btn:hover { background:#1a4a8a; border-color:#8ab4f8; color:#fff; }
 </style>
 </head>
 <body>
@@ -173,6 +433,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <span>Scan: <b id="scanStatus">idle</b></span>
   </div>
   <button class="scan-btn" id="btnScan" onclick="startScan()">Scan</button>
+  <span style="font-size:10px; color:#666; margin-left:8px;">Risk is an estimate. User must verify before deleting.</span>
 </div>
 
 <div class="controls">
@@ -193,6 +454,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <div>
     <label>Accessed before</label><br>
     <input type="text" id="filterDate" placeholder="YYYY-MM-DD" oninput="applyFilters()">
+  </div>
+  <div>
+    <label>Risk</label><br>
+    <select id="filterRisk" onchange="applyFilters()">
+      <option value="">All</option>
+      <option value="0">Disposable (0)</option>
+      <option value="1">Low (1)</option>
+      <option value="2">Medium (2)</option>
+      <option value="3">High (3)</option>
+    </select>
   </div>
   <div style="margin-left:auto; display:flex; gap:8px; align-items:center;">
     <span style="font-size:11px; color:#666;">Shift+Click: multi-sort</span>
@@ -225,10 +496,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <th style="width:30px"><input type="checkbox" class="cb" id="checkAll" onchange="toggleAll(this)"></th>
         <th onclick="sortBy('name',event)">File Name <span class="sort-info" id="arrow_name"></span></th>
         <th onclick="sortBy('ext',event)">Ext <span class="sort-info" id="arrow_ext"></span></th>
+        <th onclick="sortBy('desc',event)">Type <span class="sort-info" id="arrow_desc"></span></th>
+        <th onclick="sortBy('risk',event)">Risk <span class="sort-info" id="arrow_risk"></span></th>
         <th onclick="sortBy('size',event)">Size <span class="sort-info" id="arrow_size"></span></th>
         <th onclick="sortBy('atime',event)">Last Access <span class="sort-info" id="arrow_atime"></span></th>
         <th onclick="sortBy('mtime',event)">Modified <span class="sort-info" id="arrow_mtime"></span></th>
         <th onclick="sortBy('dir',event)">Directory <span class="sort-info" id="arrow_dir"></span></th>
+        <th style="width:30px">Info</th>
       </tr>
     </thead>
     <tbody id="tbody"></tbody>
@@ -338,17 +612,29 @@ function applyFilters() {
   let minBytes = minMB * 1024 * 1024;
   let beforeDate = document.getElementById('filterDate').value;
   let beforeTs = beforeDate ? new Date(beforeDate + 'T23:59:59').getTime()/1000 : Infinity;
+  let riskVal = document.getElementById('filterRisk').value;
 
   filteredFiles = allFiles.filter(f => {
     if (text && !f.path.toLowerCase().includes(text)) return false;
     if (ext && f.ext !== ext) return false;
     if (f.size < minBytes) return false;
     if (f.atime > beforeTs) return false;
+    if (riskVal !== '' && f.risk !== parseInt(riskVal)) return false;
     return true;
   });
 
   doSort();
   renderTable();
+}
+
+const RISK_LABELS = ['Disp','Low','Mid','High'];
+function riskBadge(r) {
+  return '<span class="risk-badge risk-' + r + '">' + RISK_LABELS[r] + '</span>';
+}
+
+function openFileInfo(ext) {
+  let e = ext.replace(/^\./, '');
+  if (e) window.open('https://fileinfo.com/extension/' + encodeURIComponent(e), '_blank');
 }
 
 function sortBy(col, event) {
@@ -433,16 +719,19 @@ function renderTable() {
       '<td><input type="checkbox" class="cb" '+chk+' onchange="toggleFile(this,'+i+')"></td>' +
       '<td title="'+escHtml(f.name)+'">'+escHtml(f.name)+'</td>' +
       '<td class="ext-col"><span class="ext-badge">'+escHtml(f.ext)+'</span></td>' +
+      '<td class="desc-col" title="'+escHtml(f.desc||'')+'">'+escHtml(f.desc||'')+'</td>' +
+      '<td>'+riskBadge(f.risk||0)+'</td>' +
       '<td class="size-col">'+f.size_h+'</td>' +
       '<td class="'+dateClass(f.atime)+'">'+f.atime_s+'</td>' +
       '<td class="date-col">'+f.mtime_s+'</td>' +
       '<td class="path-col" title="'+escHtml(f.dir)+'">'+escHtml(f.dir)+'</td>' +
+      '<td><button class="info-btn" onclick="openFileInfo(\''+escHtml(f.ext)+'\')">?</button></td>' +
       '</tr>'
     );
   }
   tbody.innerHTML = html.join('');
   if (filteredFiles.length > 5000) {
-    tbody.innerHTML += '<tr><td colspan="7" style="text-align:center;color:#888;padding:16px;">Showing 5,000 of ' + filteredFiles.length.toLocaleString() + ' files. Use filters to narrow down.</td></tr>';
+    tbody.innerHTML += '<tr><td colspan="10" style="text-align:center;color:#888;padding:16px;">Showing 5,000 of ' + filteredFiles.length.toLocaleString() + ' files. Use filters to narrow down.</td></tr>';
   }
   updateSelInfo();
 }
